@@ -1,0 +1,165 @@
+# This is a sample Python script.
+
+# Press Shift+F10 to execute it or replace it with your code.
+# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+import math
+import random
+
+from pythonping import ping
+import platform  # For getting the operating system name
+import subprocess  # For executing a shell command
+import subprocess
+import queue
+from multiprocessing import Process, Lock
+import multiprocessing as mp
+import os
+from dataclasses import dataclass
+from icmplib import ping, Host, Hop
+
+
+@dataclass
+class InfoBundle:
+	bytes: int
+	host_string: str
+	number_of: int
+
+
+@dataclass
+class TestResult:
+	suc: float
+	bytes_requested: int
+	bytes_returned: int
+	host: str
+	time: int
+	hops_left: int
+
+
+# def my_ping(host):
+#	"""
+#	Returns True if host (str) responds to a ping request.
+#	Remember that a host may not respond to a ping (ICMP) request even if the host name is valid.
+#	"""
+#
+#	# Option for the number of packets as a function of
+#	param = '-n' if platform.system().lower() == 'windows' else '-c'
+#
+#	# Building the command. Ex: "ping -c 1 google.com"
+#	command = ['ping', param, '1', host]
+#
+#	return subprocess.call(command) == 0
+
+# tuneables
+num_producer = 2
+repeat_count = 1
+single_count = 1
+ping_wait_time = 5
+ping_wait_for = 2
+payload_size_min = 50
+payload_size_max = 1000
+payload_size_step = 25
+sites_to_ping = ['www.google.com', 'stackoverflow.com', '1.1.1.1', 'reddit.com', 'bbc.co.uk', '4.2.2.1', '192.0.43.10']
+
+
+def standalone(commands, commands_mutex, results, res_mutex):
+	continue_working = True
+	my_pid = os.getpid()
+	while continue_working:
+		with commands_mutex:
+			continue_working = not commands.empty()
+			if continue_working:
+				cur_res = commands.get()
+				print(f'{commands.qsize()} remaining')
+			else:
+				break
+		if continue_working:
+			# ping_result = ping(current_command_struct.host_string, count=current_command_struct.number_of, interval=ping_wait_time, timeout=ping_wait_for, id=my_pid, source=None, privileged=True, payload_size=current_command_struct.bytes)
+			# ping_result
+			with res_mutex:
+				results.put(TestResult(suc=cur_res.packet_loss, bytes_requested=cur_res.packets_sent, bytes_returned=cur_res.packets_received, host=cur_res.address, time=cur_res.avg_rtt, hops_left=0))
+				# results.put(TestResult(suc=1.0, bytes_requested=current_command_struct.bytes, bytes_returned=bytes_trans, host=current_command_struct.host_string, time=transfer_time, hops_left=hops_left_))
+
+			# if return_code:
+			# raise subprocess.CalledProcessError(return_code, current_command)
+
+	return 0
+
+
+def worker(commands, commands_mutex, results, res_mutex):
+	continue_working = True
+	while continue_working:
+		with commands_mutex:
+			current_command_struct = commands.get()
+		current_command = 'ping ' + current_command_struct.host_string + ' -f -n ' + str(current_command_struct.number_of) + ' -l ' + str(current_command_struct.bytes)
+		process = subprocess.Popen(current_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+		for stdout_line in iter(process.stdout.readline, ""):
+			cur_string = stdout_line.replace('\n', '').replace('    ', '')
+			if not cur_string.isspace():
+				print(cur_string)
+				if cur_string.startswith('Packet needs to be fragmented but DF set.'):
+					with res_mutex:
+						results.put(TestResult(suc=0.0, bytes_requested=current_command_struct.bytes, bytes_returned=0, host=current_command_struct.host_string, time=-1, hops_left=-1))
+					continue
+				if ' (sent ' in cur_string:
+					bytes_trans = int(cur_string[cur_string.find('bytes=') + len('bytes='):cur_string.find(' (sent ')])
+					transfer_time = int(cur_string[cur_string.find(' time=') + len(' time='):cur_string.find('ms TTL=')])
+					hops_left_ = int(cur_string[cur_string.find(' TTL=') + len(' TTL='):])
+					with res_mutex:
+						results.put(TestResult(suc=bytes_trans / current_command_struct.bytes, bytes_requested=current_command_struct.bytes, bytes_returned=bytes_trans, host=current_command_struct.host_string, time=transfer_time, hops_left=hops_left_))
+					continue
+				if cur_string.startswith('Reply from '):
+					bytes_trans = int(cur_string[cur_string.find('bytes=') + len('bytes='):cur_string.find(' time=')])
+					transfer_time = int(cur_string[cur_string.find(' time=') + len(' time='):cur_string.find('ms TTL=')])
+					hops_left_ = int(cur_string[cur_string.find(' TTL=') + len(' TTL='):cur_string.find(' (sent ')])
+					with res_mutex:
+						results.put(TestResult(suc=1.0, bytes_requested=current_command_struct.bytes, bytes_returned=bytes_trans, host=current_command_struct.host_string, time=transfer_time, hops_left=hops_left_))
+					continue
+		process.stdout.close()
+
+		return_code = process.wait()
+		# if return_code:
+		# raise subprocess.CalledProcessError(return_code, current_command)
+		with commands_mutex:
+			continue_working = not commands.empty()
+	return 0
+
+
+# print(title)
+# print('module name:', __name__)
+# print('parent process:', os.getppid())
+# print('process id:', )
+
+if __name__ == '__main__':
+	mp.set_start_method('spawn')
+	buffer_cmd_mutex = Lock()
+	commanddBuffer = mp.Queue()
+	buffer_result_mutex = Lock()
+	result_buffer = mp.Queue()
+
+	# sizes_to_run = range(payload_size_min, math.ceil((payload_size_max - payload_size_min) / payload_size_step), payload_size_step)
+	sizes_to_run = [None] * len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))
+	for i in range(0, len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))):
+		sizes_to_run[i] = payload_size_min + (i * payload_size_step)
+	random.shuffle(sizes_to_run)
+
+	site_id_list = [None] * len(range(0, len(sites_to_ping)))
+	for i in range(0, len(sites_to_ping)):
+		site_id_list[i] = i
+	random.shuffle(site_id_list)
+	for this_payload_size in sizes_to_run:
+		for repeating_id in range(0, repeat_count):
+			for i in site_id_list:
+				print('generate')
+				commandBuffer.put(ping(sites_to_ping[i], count=single_count, interval=ping_wait_time, timeout=ping_wait_for, source=None, privileged=True, payload_size=this_payload_size))
+				commandBuffer.put(InfoBundle(this_payload_size, sites_to_ping[i], single_count))
+
+	proc_list = [None] * num_producer
+	for i in range(0, len(proc_list)):
+		proc_list[i] = mp.Process(target=standalone, args=(commandBuffer, buffer_cmd_mutex, result_buffer, buffer_result_mutex,))
+		proc_list[i].start()
+
+	while len(mp.active_children()) != 0:
+		# print(f'waiting for children ({len(mp.active_children())} remaining)')
+		continue
+
+	while not result_buffer.empty():
+		print(result_buffer.get())
