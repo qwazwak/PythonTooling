@@ -1,17 +1,19 @@
 from __future__ import division
 import random
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from math import floor
 from itertools import product
 from multiprocessing import freeze_support
-
+from tqdm import tqdm
 from pythonping import ping
 import multiprocessing as mp
 import os
 from dataclasses import dataclass
 from icmplib import ping
+import parmap
 
 
 class Counter(object):
@@ -58,11 +60,12 @@ class ProgressBar:
 		sys.stdout.write("\r{0}: [{1}] {2}%".format(self.descriptionText, arrow + spaces, int(floor(self.curPercent * 100))))
 		sys.stdout.flush()
 
+
 @dataclass
 class PingInfoBundle:
 	host: str
 	bytes: int
-	# repeating_count: int
+# repeating_count: int
 
 
 @dataclass
@@ -81,12 +84,13 @@ class TestResult:
 num_producer = 5
 packet_group_count = 1
 repeat_everything_count = 2
-ping_wait_time = 0.050 #s
-ping_timeout = 0.100 #s
+ping_wait_time = 0.050  # s
+ping_timeout = 0.100  # s
 payload_size_min = 50
 payload_size_max = 75
 payload_size_step = 25
 output_update_period = 16
+max_packet_loss = 0.05
 sites_to_ping = ['1.1.1.1', '4.2.2.1', '192.0.43.10', 'google.com', 'stackoverflow.com', 'reddit.com', 'bbc.co.uk']
 
 
@@ -120,13 +124,12 @@ def standalone(commands, commands_mutex, results, res_mutex, my_counter):
 
 
 def pool_worker(host, byte_count):
-	sys.stdout.write("bruh")
-	sys.stdout.flush()
-	print('START')
+	assert isinstance(host, str)
+	assert isinstance(byte_count, int)
 	my_pid = os.getpid()
-	print(f'hello from PID{my_pid}')
 	temp = ping(host, count=packet_group_count, interval=ping_wait_time, timeout=ping_timeout, id=my_pid, source=None, privileged=True, payload_size=byte_count)
-	return temp
+	final = TestResult(host=temp.address, packets_sent=temp.packets_sent, packets_received=temp.packets_received, min_rtt=temp.min_rtt, avg_rtt=temp.avg_rtt, max_rtt=temp.max_rtt, packet_loss=temp.packet_loss, succ=(temp.is_alive and (float(temp.packet_loss) <= max_packet_loss)))
+	return final
 
 
 @contextmanager
@@ -143,31 +146,29 @@ if __name__ == '__main__':
 	# output_mutex = mp.Lock()
 	counter = Counter()
 
-#	sizes_to_run = [None] * len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))
-#	for i in range(0, len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))):
-#		sizes_to_run[i] = payload_size_min + (i * payload_size_step)
-#	site_id_list = [None] * len(range(0, len(sites_to_ping)))
+	#	sizes_to_run = [None] * len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))
+	#	for i in range(0, len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))):
+	#		sizes_to_run[i] = payload_size_min + (i * payload_size_step)
+	#	site_id_list = [None] * len(range(0, len(sites_to_ping)))
 
 	total_work_count = len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step)) * repeat_everything_count * len(sites_to_ping)
 
 	list_of_packet_sizes = [None] * len(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step))
 	for index, size in enumerate(range(payload_size_min, payload_size_max + payload_size_step, payload_size_step)):
 		list_of_packet_sizes[index] = size
-	work_list = [None] * total_work_count
-	work_list = list(product(sites_to_ping, range(payload_size_min, payload_size_max + payload_size_step, payload_size_step)))
-
 	with poolcontext(processes=2) as pool:
-
 		result = pool.starmap_async(pool_worker, make_args(sites_to_ping, list_of_packet_sizes, repeat_everything_count))
 		for item in result.get():
-			print(f'address: {item.address}')
+			print(f'host: {item.host}')
+			print(f'packets_sent: {item.packets_sent}')
+			print(f'packets_received: {item.packets_received}')
 			print(f'min_rtt: {item.min_rtt}')
 			print(f'avg_rtt: {item.avg_rtt}')
 			print(f'max_rtt: {item.max_rtt}')
-			print(f'packets_sent: {item.packets_sent}')
-			print(f'packets_received: {item.packets_received}')
 			print(f'packet_loss: {item.packet_loss}')
-			print(f'is_alive: {item.is_alive}')
+			print(f'is_alive: {item.succ}')
+
+		# pbar = tqdm(total=total_work_count)
 	'''	results = pool.starmap_async(merge_names, product(names, repeat=2))
 		print(results.get(timeout=5))
 	def log_result(result):
@@ -192,6 +193,5 @@ if __name__ == '__main__':
 			remaining = results._number_left
 			print("Waiting for", remaining, "tasks to complete...")'''
 
-
-	# while not output_q.empty():
-	# 	print(output_q.get())
+# while not output_q.empty():
+# 	print(output_q.get())
